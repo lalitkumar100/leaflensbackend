@@ -76,7 +76,7 @@ app.post("/analyze", upload.single("image"), async (req, res) => {
       return res.status(400).json({ error: "No image uploaded" });
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const base64Image = req.file.buffer.toString("base64");
 
@@ -147,7 +147,4 @@ Return ONLY valid JSON. No text. No markdown.
   }
 });
 
-
-
-// ✅ EXPORT FOR VERCEL SERVERLESS
 module.exports = app;
