@@ -2,69 +2,88 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const fs = require("fs");
+const morgan = require("morgan");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const morgon = require("morgan");
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // CRITICAL: Allows Express to read JSON sent by Axios
-app.use(morgon("dev"));
+app.use(express.json({ limit: "10mb" }));
+app.use(morgan("dev"));
 
-const upload = multer({ dest: "uploads/" });
+// Memory storage for Vercel
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Gemini Init
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- NEW CHAT ENDPOINT ---
+
+
+// ================= CHAT ENDPOINT =================
 app.post("/chat", async (req, res) => {
   try {
-    const { message, reportContext, history } = req.body;
+    const { message, reportContext = {}, history = [] } = req.body;
 
-    // 1. Initialize the model with strict System Instructions
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash", // Using 2.0 or 1.5 as 2.5 is a future version
-      systemInstruction: `You are an expert AI Plant Doctor. 
-      The user is asking about a specific plant diagnosis: ${reportContext.plantName} with ${reportContext.disease}.
-      
-      CONSTRAINTS:
-      - ONLY discuss topics related to this specific plant or plant care in general.
-      - If the user asks about unrelated topics (politics, sports, coding, other random things), politely say: "I am sorry, but as your Plant Doctor, I am only allowed to discuss topics related to your ${reportContext.plantName} and its health."
-      - Use Markdown for your responses (bolding, lists).
-      - Reference the current report data if relevant: Severity is ${reportContext.severity}, Health Score is ${reportContext.healthScore}%.`
+    if (!message) {
+      return res.status(400).json({ error: "Message required" });
+    }
+
+    const {
+      plantName = "Unknown Plant",
+      disease = "Unknown Issue",
+      severity = "Unknown",
+      healthScore = "N/A",
+    } = reportContext;
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      systemInstruction: `You are an expert AI Plant Doctor.
+
+User plant: ${plantName}
+Disease: ${disease}
+Severity: ${severity}
+Health Score: ${healthScore}%
+
+Rules:
+- Only answer plant-related questions
+- Refuse unrelated topics politely
+- Use markdown formatting`,
     });
 
-    // 2. Format history for Gemini (roles must be 'user' or 'model')
     const chatSession = model.startChat({
-      history: history.map(msg => ({
+      history: history.map((msg) => ({
         role: msg.role === "assistant" ? "model" : "user",
         parts: [{ text: msg.content }],
       })),
     });
 
-    // 3. Send the message
     const result = await chatSession.sendMessage(message);
-    const responseText = result.response.text();
 
-    res.status(200).json({ reply: responseText });
-
+    res.status(200).json({ reply: result.response.text() });
   } catch (err) {
     console.error("Chat Error:", err);
-    res.status(500).json({ error: "The Plant Doctor is currently unavailable." });
+    res.status(500).json({ error: "Plant Doctor unavailable" });
   }
 });
 
-// --- EXISTING ANALYZE ENDPOINT ---
+
+
+// ================= IMAGE ANALYSIS =================
 app.post("/analyze", upload.single("image"), async (req, res) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    if (!req.file) {
+      return res.status(400).json({ error: "No image uploaded" });
+    }
 
-    const imageBuffer = fs.readFileSync(req.file.path);
-    const base64Image = imageBuffer.toString("base64");
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const result = await model.generateContent([
-      {
-        text: `You are a plant disease AI. Analyze this leaf image and return ONLY JSON in this structure: if it not img of plant leaf, respond with empty values with "isPlantLeaf": false.
+    const base64Image = req.file.buffer.toString("base64");
+
+    const prompt = `
+Analyze this image.
+
+Return ONLY valid JSON. No text. No markdown.
 
 {
   "isPlantLeaf": false,
@@ -94,8 +113,11 @@ app.post("/analyze", upload.single("image"), async (req, res) => {
   },
   "preventionTips": [],
   "notes": ""
-}`
-      },
+}
+`;
+
+    const result = await model.generateContent([
+      { text: prompt },
       {
         inlineData: {
           mimeType: req.file.mimetype,
@@ -103,22 +125,29 @@ app.post("/analyze", upload.single("image"), async (req, res) => {
         },
       },
     ]);
-  
+
     const text = result.response.text();
-    const cleaned = text.match(/\{[\s\S]*\}/)[0];
-    const parsed = JSON.parse(cleaned);
 
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
+    // Safe JSON extraction
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return res.status(500).json({ error: "AI returned invalid format" });
+    }
 
-    if(parsed.isPlantLeaf === false){
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    if (!parsed.isPlantLeaf) {
       return res.status(409).json({ error: "Not a plant leaf image" });
     }
+
     res.status(200).json(parsed);
   } catch (err) {
-    console.error(err);
+    console.error("Analyze Error:", err);
     res.status(500).json({ error: "AI analysis failed" });
   }
 });
 
-app.listen(5000, () => console.log("🚀 Server running on port 5000"));
+
+
+// ✅ EXPORT FOR VERCEL SERVERLESS
+module.exports = app;
