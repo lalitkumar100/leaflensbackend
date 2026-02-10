@@ -2,21 +2,24 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const fs = require("fs");
+// const fs = require("fs"); // <--- You no longer need 'fs' for file handling
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const morgon = require("morgan");
+const morgan = require("morgan");
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // CRITICAL: Allows Express to read JSON sent by Axios
-app.use(morgon("dev"));
+app.use(express.json());
+app.use(morgan("dev"));
 
-const upload = multer({ dest: "uploads/" });
+// --- FIX 1: USE MEMORY STORAGE INSTEAD OF DISK ---
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- NEW CHAT ENDPOINT ---
+// --- CHAT ENDPOINT (Unchanged) ---
 app.post("/chat", async (req, res) => {
   try {
     const { message, reportContext = {}, history = [] } = req.body;
@@ -25,9 +28,8 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    // 🌿 Create model with plant context
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.0-flash", // Updated to latest stable flash model if needed
       systemInstruction: `You are an expert AI Plant Doctor.
 
 Plant: ${reportContext.plantName || "Unknown"}
@@ -41,7 +43,6 @@ Rules:
 - Use simple markdown formatting.`
     });
 
-    // 🧠 Format history safely for Gemini
     let formattedHistory = history
       .filter(m => m?.content)
       .map(m => ({
@@ -49,15 +50,11 @@ Rules:
         parts: [{ text: m.content }]
       }));
 
-    // ❗ Gemini rule: first message must be user
     if (formattedHistory.length > 0 && formattedHistory[0].role !== "user") {
       formattedHistory.shift();
     }
 
-    // 💬 Start chat session
     const chat = model.startChat({ history: formattedHistory });
-
-    // 🚀 Send new message
     const result = await chat.sendMessage(message);
     const reply = result.response.text();
 
@@ -69,18 +66,25 @@ Rules:
   }
 });
 
-
-// --- EXISTING ANALYZE ENDPOINT ---
+// --- FIX 2: UPDATE ANALYZE ENDPOINT ---
 app.post("/analyze", upload.single("image"), async (req, res) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // Check if file exists
+    if (!req.file) {
+      return res.status(400).json({ error: "No image file uploaded" });
+    }
 
-    const imageBuffer = fs.readFileSync(req.file.path);
-    const base64Image = imageBuffer.toString("base64");
-    const language = req.body.language || "en"; // Default to English if not provided
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    // --- FIX 3: READ DIRECTLY FROM BUFFER ---
+    // Since we use memoryStorage, the data is in req.file.buffer
+    const base64Image = req.file.buffer.toString("base64");
+    
+    const language = req.body.language || "en";
+
     const result = await model.generateContent([
       {
-        text: `You are a plant disease AI. Analyze this leaf image and return ONLY JSON in this structure: if it not img of plant leaf, respond with empty values with "isPlantLeaf": false.and a message "Not a plant leaf image". The JSON structure is: and  use ${language} for any text in the response (like disease name, care tips, etc.): but label the keys in English.
+        text: `You are a plant disease AI. Analyze this leaf image and return ONLY JSON in this structure: if it not img of plant leaf, respond with empty values with "isPlantLeaf": false.and a message "Not a plant leaf image". The JSON structure is: and use ${language} for any text in the response (like disease name, care tips, etc.): but label the keys in English.
 
 {
   "isPlantLeaf": false,
@@ -121,11 +125,12 @@ app.post("/analyze", upload.single("image"), async (req, res) => {
     ]);
   
     const text = result.response.text();
-    const cleaned = text.match(/\{[\s\S]*\}/)[0];
+    // Improved regex to handle potential markdown code blocks provided by Gemini
+    const cleaned = text.replace(/```json|```/g, "").match(/\{[\s\S]*\}/)[0];
     const parsed = JSON.parse(cleaned);
 
-    // Clean up uploaded file
-    fs.unlinkSync(req.file.path);
+    // --- FIX 4: REMOVE UNLINK (No file was saved to disk) ---
+    // fs.unlinkSync(req.file.path); <--- DELETED
 
     if(parsed.isPlantLeaf === false){
       return res.status(409).json({ error: "Not a plant leaf image" });
@@ -137,4 +142,5 @@ app.post("/analyze", upload.single("image"), async (req, res) => {
   }
 });
 
-app.listen(5000, () => console.log("🚀 Server running on port 5000"));
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
