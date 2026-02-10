@@ -29,7 +29,7 @@ app.post("/chat", async (req, res) => {
     }
 
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash", // Updated to latest stable flash model if needed
+      model: "gemini-2.5-flash", // Updated to latest stable flash model if needed
       systemInstruction: `You are an expert AI Plant Doctor.
 
 Plant: ${reportContext.plantName || "Unknown"}
@@ -74,7 +74,7 @@ app.post("/analyze", upload.single("image"), async (req, res) => {
       return res.status(400).json({ error: "No image file uploaded" });
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     // --- FIX 3: READ DIRECTLY FROM BUFFER ---
     // Since we use memoryStorage, the data is in req.file.buffer
